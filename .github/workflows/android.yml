@@ -1,0 +1,88 @@
+name: Mixxx Android ARM64 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Mixxx 2.7
+        uses: actions/checkout@v4
+        with:
+          repository: mixxxdj/mixxx
+          ref: main
+          path: mixxx
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mixxx
+          source tools/android_buildenv.sh setup
+
+      - name: Sign Android APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PASS="$(openssl rand -hex 24)"
+          keytool -genkeypair -noprompt \
+            -keystore "$RUNNER_TEMP/mixxx.keystore" \
+            -alias mixxx \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -storepass "$PASS" \
+            -keypass "$PASS" \
+            -dname "CN=Mixxx Android"
+          echo "QT_ANDROID_KEYSTORE_ALIAS=mixxx" >> "$GITHUB_ENV"
+          echo "QT_ANDROID_KEYSTORE_KEY_PASS=$PASS" >> "$GITHUB_ENV"
+          echo "QT_ANDROID_KEYSTORE_STORE_PASS=$PASS" >> "$GITHUB_ENV"
+          echo "QT_ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/mixxx.keystore" >> "$GITHUB_ENV"
+
+      - name: Configure and build ARM64 APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mixxx
+
+          VCPKG_DIR="$(find "$PWD/buildenv" \
+            -maxdepth 1 -type d \
+            -name 'mixxx-deps-2.7-arm64-android-*' \
+            | head -n 1)"
+
+          test -n "$VCPKG_DIR"
+
+          cmake \
+            -S "$PWD" \
+            -B "$PWD/build-android" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_DIR/scripts/buildsystems/vcpkg.cmake" \
+            -DCMAKE_SYSTEM_NAME=Android
+
+          cmake --build "$PWD/build-android" \
+            --target apk --parallel 2
+
+          APK="$PWD/build-android/android-build/build/outputs/apk/release/android-build-release-signed.apk"
+          test -s "$APK"
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          cp "$APK" "$GITHUB_WORKSPACE/output/Mixxx-2.7-ARM64.apk"
+
+      - name: Upload finished APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mixxx-android-arm64
+          path: output/Mixxx-2.7-ARM64.apk
+          retention-days: 14
